@@ -1,0 +1,64 @@
+### **Lead in WA Schools: Making Figures**
+This file is used to make plots from a cleaned dataset that includes data from DOH lead water testing, OSPI student enrollment/demographic information, leaded flights, blood lead levels, and lead risk from housing. To run this file, you will need to place the following files in your working directory:
+(1) "lead_and_ospi.csv"
+
+### **Step 1. Load R Libraries and Upload Cleaned Data Resulting from "Clean_Lead_Data.Rmd" file**
+```{r}
+library(tidyr)
+library(dplyr)
+library(tidyverse)
+library(ggplot2)
+library(sf)
+library(scales)
+
+setwd(dir = "~/Dropbox/Katya Dropbox/HCDE pre-tenure (2023-2028)/Research/Lead in WA Schools/")
+
+lead_and_ospi <-read.csv(file = "lead_and_ospi.csv", sep = ",",stringsAsFactors = T)
+sd_map <- read_sf("datasets/mapping_geospatial_WA/Geojson Files/Washington_School_District_Boundaries.geojson")
+
+```
+
+### **Step 2. Calculate % Lead Contamination Above Thresholds at the level of school districts, schools, and fixtures**
+```{r}
+district_contamination <- lead_and_ospi %>%
+  group_by(school_district) %>%
+  summarise(total_samples = n(),
+            "1 ppb" = 100 * sum(mean_lead_result_ppb > 1, na.rm = TRUE)/total_samples,
+            "5 ppb" = 100 * sum(mean_lead_result_ppb > 5, na.rm = TRUE)/total_samples,
+            "10 ppb" = 100 * sum(mean_lead_result_ppb > 10, na.rm = TRUE)/total_samples)
+
+district_contamination <- district_contamination %>%
+  pivot_longer(cols=c(3:5),
+               names_to = "Lead Contamination Threshold",
+               values_to = "Percent Contamination (%)")  
+
+school_contamination <- lead_and_ospi %>%
+  filter(school_name != "Demolished School") %>%
+  group_by(school_district, 
+           school_name,
+           DOH_testing_round,
+           x,
+           y) %>%
+ summarise(total_samples = n(),
+            "1 ppb" = 100 * sum(mean_lead_result_ppb > 1, na.rm = TRUE)/total_samples,
+            "5 ppb" = 100 * sum(mean_lead_result_ppb > 5, na.rm = TRUE)/total_samples,
+            "10 ppb" = 100 * sum(mean_lead_result_ppb > 10, na.rm = TRUE)/total_samples)
+
+school_contamination <- school_contamination %>%
+  pivot_longer(cols=c(7:9),
+            names_to = "Lead Contamination Threshold",
+               values_to = "Percent Contamination (%)")  
+               
+fixture_contamination <- lead_and_ospi %>%
+filter(school_name != "Demolished School") %>%
+group_by(fixture_type) %>%
+summarise(total_samples = n(),
+            "1 ppb" = 100 * sum(mean_lead_result_ppb > 1, na.rm = TRUE)/total_samples,
+            "5 ppb" = 100 * sum(mean_lead_result_ppb > 5, na.rm = TRUE)/total_samples,
+            "10 ppb" = 100 * sum(mean_lead_result_ppb > 10, na.rm = TRUE)/total_samples)
+
+fixture_contamination <- fixture_contamination %>%
+  pivot_longer(cols=c(3:5),
+         names_to = "Lead Contamination Threshold",
+               values_to = "Percent Contamination (%)")  
+```

@@ -1,0 +1,204 @@
+### **Lead in WA Schools: Making Figures**
+This file is used to make plots from a cleaned dataset that includes data from DOH lead water testing, OSPI student enrollment/demographic information, leaded flights, blood lead levels, and lead risk from housing. To run this file, you will need to place the following files in your working directory:
+
+(1) "all_lead_datasets.csv"
+
+### **Step 1. Load R Libraries and Upload Cleaned Data Resulting from "Clean_Lead_Data.Rmd" file**
+```{r}
+library(tidyr)
+library(dplyr)
+library(tidyverse)
+library(ggplot2)
+library(sf)
+library(scales)
+
+setwd(dir = "~/Dropbox/Katya Dropbox/HCDE pre-tenure (2023-2028)/Research/Lead in WA Schools/")
+
+all_lead_datasets <-read.csv(file = "all_lead_datasets.csv", sep = ",",stringsAsFactors = T)
+sd_map <- read_sf("datasets/mapping_geospatial_WA/Geojson Files/Washington_School_District_Boundaries.geojson")
+
+results='hide'
+```
+
+### **Step 2. Make State Map of WA-DOH Sampling Program in Districts and Schools (# Samples)
+```{r}
+#Calculate % of water samples exceeding 5ppb lead in each school district  
+state_contamination <- all_lead_datasets %>%
+  group_by(school_district, DOH_testing_round) %>%
+  summarise(total_samples_district = n(),
+            "pct_contamination_district" = 100 * sum(mean_lead_result_ppb > 5, na.rm = TRUE)/total_samples_district)
+
+school_name_contamination <- all_lead_datasets %>%
+  group_by(school_name, school_district) %>%
+  summarise(total_samples_school = n(),
+            "pct_contamination_district" = 100 * sum(mean_lead_result_ppb > 5, na.rm = TRUE)/total_samples_school)
+
+write.csv(school_name_contamination, 
+          "datasets/lead_water/2018 Lead Sampling_DOH/correct.csv", row.names = FALSE)
+
+#Add district-level lead contamination data to school district map boundaries
+sd_map <- sd_map %>%
+  rename(school_district = ShortName,
+         esd_num = ESDNum, 
+         esd_name = ESDName,
+         shape_area = Shape__Area,
+         shape_length = Shape__Length,
+         sd_geometry = geometry) %>%
+select(school_district, 
+         esd_num,
+         esd_name,
+         shape_area,
+         shape_length,
+         sd_geometry) %>%
+ left_join(state_contamination, by = "school_district")
+ #Calculate % of water samples exceeding different lead thresholds in each school
+
+school_contamination <- all_lead_datasets %>%
+  group_by(school_district, 
+           school_name,
+           DOH_testing_round,
+           x,
+           y) %>%
+summarise(total_samples_school = n(),
+            "lead_1" = 100 * sum(mean_lead_result_ppb > 1, na.rm = TRUE)/total_samples_school,
+            "lead_5" = 100 * sum(mean_lead_result_ppb > 5, na.rm = TRUE)/total_samples_school,
+            "lead_10" = 100 * sum(mean_lead_result_ppb > 10, na.rm = TRUE)/total_samples_school) 
+
+school_contamination <- school_contamination %>%
+  pivot_longer(cols=c(7:9),
+            names_to = "contamination_threshold",
+               values_to = "pct_contamination_school")  
+               
+
+# Convert x,y degree decimal coordinates (lat long) into shapefile and match coordinate systems between datasets
+school_contamination_sf <- st_as_sf(school_contamination, coords = c("x", "y"), crs=4326) 
+school_contamination_sf <- st_transform(school_contamination_sf, crs = st_crs(sd_map))  
+
+ggplot() +
+  geom_sf(data = sd_map,
+          color = "black",
+          size = 0.2,
+          aes(fill = pct_contamination_district)) +
+  scale_fill_gradient2(na.value = "gray",
+                       low = "white",
+                       mid = "lightyellow",
+                       high = "red",
+                       limits = c(0,100))+
+  geom_sf(data = school_contamination_sf,
+             aes(size = total_samples_school),
+          fill = "#3288bd",
+          alpha = .2,
+          shape = 21,
+          stroke = 0.5,
+          color = "black")+
+  labs(fill = "Percent of Water Samples Exceeding \n5 ppb Lead in School District (%)\n",
+       size = "Number of Water Samples \nTested for Lead per School (#)\n") +
+   theme(panel.grid.major = element_blank(),   
+        panel.grid.minor = element_blank(),   
+        panel.background = element_blank(), 
+        axis.line = element_blank(),
+        axis.text = element_blank(),
+        axis.title = element_blank(),
+        axis.ticks = element_blank(),
+        legend.text = element_text(size = 10,face = "bold"),
+        legend.title = element_text(size = 10,face = "bold"))
+
+ggsave(file = "figures/map.png",
+       height = 6, width = 10, limitsize = F)
+```
+
+### **Step 2. Make Chart of Sample Contamination by Fixture Type
+```{r}
+#Calculate % Lead Contamination above thresholds by fixture type**
+
+fixture_contamination <- all_lead_datasets %>%
+group_by(fixture_type) %>%
+summarise(total_samples_fixture_types = n(),
+            "lead_1" = 100 * sum(mean_lead_result_ppb > 1, na.rm = TRUE)/total_samples_fixture_types,
+            "lead_5" = 100 * sum(mean_lead_result_ppb > 5, na.rm = TRUE)/total_samples_fixture_types,
+            "lead_10" = 100 * sum(mean_lead_result_ppb > 10, na.rm = TRUE)/total_samples_fixture_types)
+
+View(fixture_contamination)
+fixture_contamination <- fixture_contamination %>%
+  pivot_longer(cols=c(3:5),
+         names_to = "contamination_threshold",
+               values_to = "pct_contamination_fixture") 
+
+ggplot(data = fixture_contamination %>%
+           filter(contamination_threshold == "lead_5")%>%
+          filter(fixture_type != c( "Other"))) +
+  geom_col(aes(y = fct_reorder(fixture_type,pct_contamination_fixture),
+           x = pct_contamination_fixture,
+           fill = fixture_type),
+           width = 0.8) +
+  labs(x = "\nPercent Lead Contamination of School Water Fixtures (%)",
+       y = "WA School Drinking Water Fixture Types \n") +
+   scale_fill_brewer(type = "qual",
+                     palette = "Accent")+
+   theme(panel.background = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.line = element_line(color = "black"),
+        axis.title = element_text(size = 12,
+                                  face = "bold"),
+        axis.text = element_text(size = 10,
+                                 color = "black"),
+        legend.position = "none")
+
+ggsave(file = "figures/fixtures.png",
+       height = 5, width = 7, limitsize = F)
+ 
+message=FALSE
+```
+
+
+### **Step 4. Plot Lead Trends in School Districts**
+```{r}
+lead_Seattle <-
+ggplot(all_lead_datasets %>% 
+         filter(school_district == "Seattle")) +  
+  geom_jitter(aes(y = school_name, 
+                  x=mean_lead_result_ppb,
+                  fill = fixture_type), 
+              height = 0.1, width = 0.25,
+              shape = 21,
+              color = "black",
+              size = 4,
+              alpha = 0.7,
+              stroke = 0.2) +
+  scale_fill_manual(labels = c("Other",
+                               "Tap/Sink",
+                               "Bottle Refill Station",
+                               "Water Fountain",
+                               "Ice Machine/Fridge",
+                               "Pot Filler",
+                               "Sprayer/Hose",
+                               "Water Cooler"),
+                    values = c("black",
+                               "orange",
+                               "#bae4bc",
+                               "#e31a1c",
+                               "#0868ac",
+                               "blue",
+                               "gray",
+                               "lightblue"))+
+  geom_vline(xintercept = 5, color = "red", size = 1)+
+  theme_classic()+
+  theme(legend.position = "right",
+        legend.title=element_text(size=14, face = "bold"),
+        legend.text=element_text(size=12),
+        axis.title.x = element_text(size=14, face = "bold"),
+        axis.title.y = element_text(size=14, face = "bold"),
+        axis.text = element_text(size=12),
+        panel.spacing = unit(1,"lines"),
+        strip.text = element_text(size = 12))+
+  xlab("\nLead Concentration (ppb)")+
+  ylab("School Name")+
+  scale_x_log10(breaks = c(0.25,1,5,10,20,50,100), 
+                labels = c("< 1","1","5","10","20","50","100"))+
+  guides(fill = guide_legend(title = "Fixture Type")) +
+  ggtitle("Seattle Public School District") +
+  theme(plot.title = element_text(face = "bold"))
+
+ggsave(file = "figures/lead_Seattle.png",
+       height = 4, width = 9, limitsize = F)
+```

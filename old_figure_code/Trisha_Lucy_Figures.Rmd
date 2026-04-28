@@ -1,0 +1,716 @@
+---
+title: "trisha-final"
+output: html_document
+date: "2025-08-15"
+---
+
+###**Setup R Markdown file, set working directory**
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "~/Desktop/Lead in WA Schools")
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+###**Add libraries and data files**
+```{r}
+library(dplyr)
+library(tidyverse)
+library(ggplot2)
+library(sf)
+library(patchwork)
+
+sd_map <- read_sf("datasets/mapping_geospatial_WA/Geojson Files/Washington_School_District_Boundaries.geojson")
+esd_data <- read_sf("datasets/mapping_geospatial_WA/Geojson Files/Washington_Educational_Service_District_Boundaries.geojson")
+county_data <- read_sf("datasets/mapping_geospatial_WA/Geojson Files/WA_County_Boundaries.geojson")
+
+all_lead_datasets <- read.csv(file = "all_lead_datasets.csv", sep = ",",stringsAsFactors = T)
+
+```
+
+
+
+###**Create general data frames (lucy)**
+```{r}
+
+all_lead_datasets <- all_lead_datasets %>% 
+  mutate(school_county = if_else(school_county == "PendOreille",
+                                 "Pend Oreille",
+                                 school_county))
+
+county_boundaries <- county_data %>% 
+  rename(school_county = JURISDICT_LABEL_NM)
+
+bll_data <- all_lead_datasets %>% 
+  select(school_county,
+         num_children_tested,
+         num_with_bl_results_above_5,
+         num_children_below_72_months,
+         percent_with_bl_result_above_5,
+         reliability) %>% 
+  filter(!is.na(num_children_below_72_months)) %>%
+  distinct() %>% 
+  left_join(county_boundaries, by = "school_county") %>% 
+  st_as_sf(sf_column_name = "geometry", crs = 4326)
+
+lead_water_data <- all_lead_datasets %>% 
+  select(x,
+         y,
+         school_name,
+         DOH_testing_round,
+         school_district,
+         school_county,
+         building_id,
+         fixture_type,
+         fixture_housing_location,
+         number_replicates,
+         mean_lead_result_ppb,
+         contamination_status,
+         building_construction_year)%>% 
+  left_join(county_boundaries, by = "school_county") %>% 
+  st_as_sf(sf_column_name = "geometry", crs = 4326)
+
+housing_risk_data <- all_lead_datasets %>% 
+  select(school_county,
+         num_units_w_lead_hazard_estimated,
+         num_total_housing_units,
+         pct_units_w_lead_hazard_estimated) %>% 
+  filter(!is.na(num_units_w_lead_hazard_estimated)) %>%
+  distinct() %>% 
+  left_join(county_boundaries, by = "school_county") %>%
+  st_as_sf(sf_column_name = "geometry", crs = 4326)
+
+median_income_data <- all_lead_datasets %>% 
+  group_by(school_county) %>% 
+  summarise(median_hh_income_2022 = first(na.omit(median_hh_income_2022))) %>% 
+  left_join(county_boundaries, by = "school_county")
+
+flights_data <- all_lead_datasets %>% 
+  select(x,
+         y,
+         school_name,
+         school_district,
+         school_county,
+         total_leaded_flights) %>% 
+  filter(school_county == "King") %>% 
+  distinct()
+
+```
+
+
+###**BLL and Lead Fixtures: Makes map of WA state with county boundaries. Color of county represents the percent of children with high blood lead levels and the size of the red dot represents the average percent of fixtures with elevated lead levels across the county. (lucy)**
+
+```{r}
+
+# Note: creating county_ave_lead turns ~30000 rows into 37, it takes about 20 minutes on my computer -lucy
+county_ave_lead <- lead_water_data %>%
+  group_by(school_county) %>%
+  summarise(avg_pct_above_5 = mean(mean_lead_result_ppb > 5, na.rm = TRUE) * 100,
+            avg_lead_level = mean(mean_lead_result_ppb),
+            .groups = "drop")
+
+county_ave_lead_centroids <- county_ave_lead %>% 
+  st_centroid()
+
+map_both <- ggplot() +
+  geom_sf(data = bll_data, aes(fill = percent_with_bl_result_above_5)) +
+  geom_sf(data = county_ave_lead_centroids, aes(size = avg_pct_above_5), color = "red", alpha = 0.7) +
+  scale_fill_viridis_c(option = "viridis", na.value = "gray80", name = "% of children < 72 months with BLL >= 5ug/Dl") +  
+  scale_size_continuous(name = "Avg % fixtures >= 5ppb") +
+  labs(title = "Blood Lead Levels in WA by County") +
+  theme_bw()
+
+map_both
+
+ggsave("Trisha_Lucy_Figures/county_bl_levels_with_fixtures.png", plot = map_both, bg = "white", width = 8, height = 6)
+
+```
+
+###**BLL by County: Makes a map of WA state with county boundaries. Color of each county represents the percent of children with high blood lead levels.(lucy)**
+```{r}
+#This map is missing two counties that aren't accounted for in the school testing data. San Juan county and Wahkiakum county. 
+
+map_bll_county <- ggplot() +
+  geom_sf(data = bll_data, aes(fill = percent_with_bl_result_above_5), col = "white") +
+  scale_fill_viridis_c(option = "viridis", na.value = "gray80", name = "% of children < 72 months with BLL >= 5ug/Dl") +  
+  labs(title = "Blood Lead Levels in WA by County") +
+  theme_bw()
+
+map_bll_county
+
+ggsave("Trisha_Lucy_Figures/county_bll.png", plot = map_bll_county, bg = "white", width = 8, height = 6)
+
+```
+
+###**Lead in Fixtures by County: Makes a map of WA state with county boundaries. Color of each county represents the average percent of fixtures with lead levels greater than 5 ppb.(lucy)**
+```{r}
+#This map is missing two counties that aren't accounted for in the school testing data. San Juan county and Wahkiakum county. 
+
+map_lead_fixtures_county <- ggplot() + 
+  geom_sf(data = county_ave_lead, aes(fill = avg_pct_above_5), col = "white") +
+  scale_fill_viridis_c(option = "viridis", na.value = "gray80", name = "avg % of fixtures > 5 ppb") +
+  labs(title = "% of fixtures with more than 5 ppb lead by county") +
+  theme_bw()
+
+map_lead_fixtures_county
+
+ggsave("Trisha_Lucy_Figures/map_pct_fixtures_more_than_5_county.png", plot = map_lead_fixtures_county, width = 8, height = 6)
+
+```
+
+###**Combined: Combines two maps vertically: 1) map_bll_county — percent of children with high blood lead levels by county and 2) map_lead_fixtures_county — average percent of fixtures with >5 ppb lead by county.(lucy)**
+```{r}
+combined <- map_bll_county / map_lead_fixtures_county
+
+combined
+
+ggsave("Trisha_Lucy_Figures/two_graph_bll_fixtures_by_county.png", plot = combined, width = 8, height = 6)
+
+```
+
+###**Scatterplot: Creates a scatter plot showing the relationship between: 1) Average % of fixtures with lead levels > 5 ppb (x-axis) and 2) Average % of children <72 months with blood lead levels ≥ 5 µg/dL (y-axis). Each point represents one county. (lucy)**
+```{r}
+fixtures_no_location <- county_ave_lead %>% 
+  select(school_county,
+         avg_pct_above_5,
+         avg_lead_level) %>% 
+  st_drop_geometry()
+
+bll_no_location <- bll_data %>% 
+  select(school_county,
+         percent_with_bl_result_above_5) %>% 
+  st_drop_geometry()
+
+bll_fixtures_combined <- bll_no_location %>% 
+  left_join(fixtures_no_location, by = "school_county")
+
+scatter <- bll_fixtures_combined %>% 
+  ggplot(aes(x = avg_pct_above_5, y = percent_with_bl_result_above_5)) +
+  geom_point(color = "blue", size = 3) +
+  labs(title = "Average % of fixtures >5pbb vs Avg % children ≥ 5ug/Dl by County",
+       x = "Average % of fixtures > 5 ppb", 
+       y = "Average % children <72 months with >= 5ug/Dl BLL") +
+  theme_bw()
+
+scatter
+
+ggsave("Trisha_Lucy_Figures/scatter_bll_vs_fixtures_county.png", plot = scatter, width = 8, height = 6)
+
+```
+
+###**Housing County Map:Maps housing lead hazard risk data by county. (lucy)**
+```{r}
+# These maps are missing two counties that aren't accounted for in the school testing data. San Juan county and Wahkiakum county. 
+
+# map % units with lead hazard
+map_housing_risk <- ggplot() + 
+  geom_sf(data = housing_risk_data, aes(fill = pct_units_w_lead_hazard_estimated), col = "white") +
+  scale_fill_viridis_c(option = "viridis", na.value = "gray80", name = "avg % units with lead hazard estimated") +
+  labs(title = "% units with lead hazard per county") +
+  theme_bw()
+
+map_housing_risk
+
+# combines BLL map and housing risk map
+bll_housing_combined <- map_bll_county / map_housing_risk
+
+bll_housing_combined
+
+# saves single and combined map
+ggsave("Trisha_Lucy_Figures/housing_risk_by_county.png", plot = map_housing_risk, width = 8, height = 6)
+ggsave("Trisha_Lucy_Figures/bll_housing.png", plot = bll_housing_combined, width = 8, height = 6)
+
+```
+
+###**Scatter plot of building construction year vs lead concentration (2022): Creates a scatter plot showing lead concentration (ppb) by building constructionyear for each sample in 2022. Points are colored by fixture type. Plot 1 includes all fixtures and a red horizontal line at 5 ppb.Plot 2 includes all fixtures with lead levels under 100 ppb and a red horizontal line at 5 ppb. Plot 3 includes all fixtures with lead leves under 100 ppb and deoes not include any red horizontal lines. (lucy)**
+```{r}
+#creates data frame
+lead_and_building_2022 <- all_lead_datasets %>% 
+  filter(DOH_testing_round == 2022,
+         building_construction_year != 1111,
+         ) %>% 
+  select(x,
+         y,
+         school_name,
+         school_district,
+         school_county,
+         fixture_type,
+         fixture_housing_location,
+         fixture_housing_type,
+         number_replicates,
+         mean_lead_result_ppb,
+         contamination_status,
+         building_detail,
+         building_construction_year)
+
+#plot of all samples with horizontal line
+by_sample_all <- lead_and_building_2022 %>% 
+  ggplot() +
+  geom_point(aes(x = building_construction_year, y = mean_lead_result_ppb, color = fixture_type)) +
+  geom_hline(yintercept = 5, color = "red", linewidth = 1) + 
+  labs(title = "Building Year vs. Lead Concentration by sample in 2022 \n", x = "\n Building Construction Year",
+       y = "Lead Concentration (ppb) \n") +
+  scale_color_manual(values = c(
+    "Bottle Refill Station" = "#0072B2",
+    "Tap/Sink" = "#E69F00",
+    "Ice Machine/Fridge" = "#009E73",
+    "Pot Filler" = "#F0E442",
+    "Other" = "#CC79A7",
+    "Water Fountain" = "#56B4E9",
+    "Water Cooler" = "#D55E00",
+    "Sprayer/Hose" = "#000000"
+  )) +
+  theme_bw()
+
+by_sample_all
+
+ggsave("Trisha_Lucy_Figures/building_year_vs_lead_all.png", plot = by_sample_all, width = 8, height = 6)
+
+#plot of all samples under 100 ppb with horizontal line
+lead_and_building_2022_filtered <- lead_and_building_2022 %>%
+  filter(mean_lead_result_ppb < 100)
+
+by_sample_under_100 <- lead_and_building_2022_filtered %>% 
+  ggplot() +
+  geom_point(aes(x = building_construction_year, y = mean_lead_result_ppb, color = fixture_type)) +
+  geom_hline(yintercept = 5, color = "red", linewidth = 1) + 
+  labs(title = "Building Year vs. Lead Concentration by sample in 2022 \n", x = "\n Building Construction Year",
+       y = "Lead Concentration (ppb) \n") +
+  scale_color_manual(values = c(
+    "Bottle Refill Station" = "#0072B2",
+    "Tap/Sink" = "#E69F00",
+    "Ice Machine/Fridge" = "#009E73",
+    "Pot Filler" = "#F0E442",
+    "Other" = "#CC79A7",
+    "Water Fountain" = "#56B4E9",
+    "Water Cooler" = "#D55E00",
+    "Sprayer/Hose" = "#000000"
+  )) +
+  theme_bw()
+
+by_sample_under_100
+
+ggsave("Trisha_Lucy_Figures/building_year_vs_lead_under_100.png", plot = by_sample_under_100, width = 8, height = 6)
+
+#plot of all fixtures under 100 ppb without horizontal line
+by_sample_under_100_no_bar <- lead_and_building_2022_filtered %>% 
+  ggplot() +
+  geom_point(aes(x = building_construction_year, y = mean_lead_result_ppb, color = fixture_type)) +
+  labs(title = "Building Year vs. Lead Concentration by sample in 2022 \n", x = "\n Building Construction Year",
+       y = "Lead Concentration (ppb) \n") +
+  scale_color_manual(values = c(
+    "Bottle Refill Station" = "#0072B2",
+    "Tap/Sink" = "#E69F00",
+    "Ice Machine/Fridge" = "#009E73",
+    "Pot Filler" = "#F0E442",
+    "Other" = "#CC79A7",
+    "Water Fountain" = "#56B4E9",
+    "Water Cooler" = "#D55E00",
+    "Sprayer/Hose" = "#000000"  
+    )) +
+  theme_bw()
+
+by_sample_under_100_no_bar
+
+ggsave("Trisha_Lucy_Figures/building_year_vs_lead_under_100_no_bar.png", plot = by_sample_under_100_no_bar, width = 8, height = 6)
+
+```
+
+###**Plotting a geospatial map of WA state with markers of which districts have been tested in which years, and markers for every school tested, with size of the marker indicating the number of samples per school.(trisha)**
+```{r}
+
+
+#standardizing names of districts
+sd_map <- sd_map %>%
+  mutate(district_name = ShortName)
+
+#create tested flags
+tested_22 <- all_lead_datasets %>%
+  filter(DOH_testing_round == "2022") %>%
+  distinct(school_district)
+tested_18 <- all_lead_datasets %>%
+  filter(DOH_testing_round == "2018") %>%
+  distinct(school_district)
+
+sd_map <- sd_map %>%
+  mutate(
+    tested_18 = district_name %in% tested_18,
+    tested_22 = district_name %in% tested_22,
+    tested_year = case_when(
+      tested_18 & tested_22 ~ "Both",
+      tested_22 ~ "2021",
+      tested_18 ~ "2018",
+      TRUE ~ "None"
+    )
+  )
+
+# Filter school coordinates within WA bounds and add year tag
+schools_data <- all_lead_datasets
+schools_data <- schools_data%>%
+  drop_na(x, y)%>%
+  filter(
+    #filtering in a bounding box for washington state to remove outliers
+    x >= -125 & x <= -116,
+    y  >=  45.5 & y  <=  49.1
+  )
+
+# Convert schools to sf
+# Count number of samples per school
+school_sample_counts <- schools_data %>%
+  group_by(school_name) %>%
+  summarise(n_samples = n(), .groups = "drop")
+
+# Join back to main data
+schools_data <- schools_data %>%
+  left_join(school_sample_counts, by = "school_name")
+
+schools_sf <- st_as_sf(schools_data, coords = c("x", "y"), crs = 4326)
+
+
+# --- Add centroids for labeling districts safely ---
+
+# Project to WA State Plane CRS for accurate centroid calculation
+WSD_boundaries_proj <- st_transform((sd_map), 2855)
+
+# Compute centroids in projected space
+WSD_boundaries_proj <- WSD_boundaries_proj %>%
+  mutate(label_geometry = st_centroid(geometry))
+
+# Transform back to EPSG:4326 for plotting
+WSD_boundaries <- st_transform(WSD_boundaries_proj, 4326)
+
+# Plot
+ggplot() + 
+  geom_sf(
+    data = sd_map
+  ) +
+  geom_sf(
+    data = schools_sf,
+    aes(size = n_samples),
+    shape = 21,
+    stroke = 0.4
+  ) + 
+  scale_fill_manual(
+      values = c(
+        "None" = "gray90",
+        "2018" = "#78AA83",
+        "2022" = "#F2ADAD",
+        "Both" = "#8B7AAE"
+      ),
+      name = "DOH School Water \nLead Sampling", 
+      labels = c(
+        "None" = "Not tested", 
+        "2018" = "Tested in 2018", 
+        "2022" = "Tested in 2022",
+        "Both" = "Tested in 2018 & 2022"
+      ) 
+  ) +
+  theme_void() + 
+  theme(
+    legend.position = "none",  # <- This line removes the legend
+    plot.title = element_text(hjust = 0.5)
+  ) +
+  labs(title = "WA Schools Water Testing\n", size = NULL)
+```
+
+###**Making a facet wrapped graph comparing lead hazards to median income (trisha)**
+```{r}
+
+#establishing variables from not-common datasets
+median_income <- all_lead_datasets %>%
+  select(school_county, median_hh_income_2022)
+
+lead_contamination <- #combined_lead_data %>%
+  select(school_county, pct_above_5)%>%
+  group_by(school_county) %>%
+  summarize(across(where(is.numeric), mean, na.rm = TRUE))%>%
+  drop_na()
+
+housing_risk <- all_lead_datasets%>%
+  select(school_county, pct_units_w_lead_hazard_estimated)
+
+#making a combined dataframe
+combined <- housing_risk %>%
+  inner_join(median_income, by="county")%>%
+  inner_join(lead_contamination, by="county")
+
+
+plot_data <- bind_rows(
+  housing_risk %>% mutate(metric = "% Lead Risk in Housing"),
+  bll_levels %>% mutate(metric = "% BLL >5µg/dL in Kids <6"),
+  lead_contamination %>% mutate(metric = "% Lead Contamination in Schools")
+)
+
+# Split the data into 3 subsets
+lead_plot <- plot_data %>% filter(metric == "% Lead Risk in Housing")
+bll_plot <- plot_data %>% filter(metric == "% BLL >5µg/dL in Kids <6")
+school_plot <- plot_data %>% filter(metric == "% Lead Contamination in Schools")
+
+# Plot 1
+p1 <- ggplot(lead_plot, aes(x = med_income, y = value, color = med_income)) +
+  #finds the R^2 value for the linear regression
+  stat_poly_eq(
+    aes(group = 1, label = paste("bold(", ..rr.label.., ")")),
+    formula = y ~ x,
+    parse = TRUE,
+    label.x = 110000,
+    label.y =9,
+    size = 3,
+    color = "gray30",
+    geom = "label",
+    color = "black",        # text color
+    fill = "white",         # background box color
+    label.size = 0,
+    label.padding = unit(0.15, "lines")  # tighter box
+  ) +
+  geom_text_repel(
+    aes(label = county),
+    size = 2.5,
+    color = "black",
+    box.padding = 0.3,
+    nudge_y = 0.1,
+    segment.size = 0 
+  ) +
+  geom_smooth(method = "lm", se = FALSE, color = scales::alpha("gray30", 0.6),, linewidth = 0.5) +
+  geom_point(size = 2) +
+  scale_color_viridis_c(option = "C", direction = -1, name = "Median Income") +
+  scale_x_continuous(
+    labels = scales::dollar_format(scale = 0.0001, suffix = "0K"),
+    breaks = seq(60000, 130000, 10000)
+  ) +
+  labs(x = NULL, y = "Lead Exposure Risk from \npre-1978 Housing (%)") +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    axis.line = element_line(color = "black"),
+    axis.ticks = element_line(),
+    panel.grid.major = element_blank(),  # removes major grid lines
+    panel.grid.minor = element_blank(),  # already in your code; keeps it
+    axis.title.y = element_text(margin = margin(r = 10))
+  )
+
+# Plot 2
+p2 <- ggplot(bll_plot, aes(x = med_income, y = value, color = med_income)) +
+  stat_poly_eq(
+    aes(group = 1, label = paste("bold(", ..rr.label.., ")")),
+    formula = y ~ x,
+    parse = TRUE,
+    label.x = 110000,
+    label.y = 0.5,
+    size = 3,
+    color = "gray30",
+    geom = "label",
+    color = "black",        # text color
+    fill = "white",         # background box color
+    label.size = 0,
+    label.padding = unit(0.15, "lines")  # tighter box
+  ) +
+  geom_text_repel(
+    aes(label = county),
+    size = 2.5,
+    color = "black",
+    box.padding = 0.3,
+    nudge_y = 0.3,
+    segment.size = 0 
+  ) +
+  geom_smooth(method = "lm", se = FALSE, color = scales::alpha("gray30", 0.6), linewidth = 0.5) +
+  geom_point(size = 2) +
+  scale_color_viridis_c(option = "C", direction = -1, name = "Median Income") +
+  scale_x_continuous(
+    labels = scales::dollar_format(scale = 0.0001, suffix = "0K"),
+    breaks = seq(60000, 130000, 10000)
+  ) +
+  labs(x = NULL, y = "Blood Lead Levels in Kids Under 6 \n(% samples >5µg/dL)") +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    axis.line = element_line(color = "black"),
+    axis.ticks = element_line(),
+    panel.grid.major = element_blank(),  # removes major grid lines
+    panel.grid.minor = element_blank(),  # already in your code; keeps it
+    axis.title.y = element_text(margin = margin(r = 10))
+  )
+
+# Plot 3
+p3 <- ggplot(school_plot, aes(x = med_income, y = value, color = med_income)) +
+  stat_poly_eq(
+    aes(group = 1, label = paste("bold(", ..rr.label.., ")")),
+    formula = y ~ x,
+    parse = TRUE,
+    label.x = 110000,
+    label.y = 25,
+    size = 3,
+    color = "gray30",
+    geom = "label",
+    color = "black",        # text color
+    fill = "white",         # background box color
+    label.size = 0,
+    label.padding = unit(0.15, "lines")  # tighter box
+  ) +
+  geom_text_repel(
+    aes(label = county),
+    size = 2.5,
+    color = "black",
+    box.padding = 0.3,
+    nudge_y = 0.3,
+    segment.size = 0 
+  ) +
+  geom_smooth(method = "lm", se = FALSE, color = scales::alpha("gray30", 0.6), linewidth = 0.5) +
+  geom_point(size = 2) +
+  scale_color_viridis_c(option = "C", direction = -1, name = "Median Income") +
+  scale_x_continuous(
+    labels = scales::dollar_format(scale = 0.0001, suffix = "0K"),
+    breaks = seq(60000, 130000, 10000)
+  ) +
+  labs(x = "Household Median Income", y = "Lead Contamination of School \nDrinking Water (% samples > 5 ppb)") +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    axis.line = element_line(color = "black"),
+    axis.ticks = element_line(),
+    panel.grid.major = element_blank(),  # removes major grid lines
+    panel.grid.minor = element_blank(),  # already in your code; keeps it
+    axis.title.y = element_text(margin = margin(r = 10))
+  )
+
+# Combine the 3 plots vertically
+final_plot <- p1 / p2 / p3 +
+  plot_annotation(title = "          Lead Hazard Metrics vs. Household Median Income by County")
+```
+
+###**Plot number of flights versus % of fixtures over 5ppb and label high-risk schools (trisha)**
+```{r}
+
+fixture_data <- all_lead_datasets
+  select(school_name, pct_above_5, county, school_district)%>%
+  filter(county=="King")
+
+#filtering out flights from only small airports
+flight_data <- flight_data%>%
+  filter(county=="King")%>%
+  select(school_name, school_district, school_county, total_leaded_flights)
+
+
+combined <- fixture_data %>%
+  inner_join(flight_data, by="school_name")%>%
+  mutate(label_override = case_when(
+    school_name == "Rainier View Elementary School" ~ "Rainier View Elem",
+    school_name == "Catharine Blaine K-8 School" ~ "Catharine Blaine K-8",
+    school_name == "Maple Elementary School" ~ "Maple Elem",
+    school_name == "Campbell Hill Elementary School" ~ "Campbell Hill Elem",
+    school_name == "Showalter Middle School" ~ "Showalter Middle",
+    school_name == "Foster Senior High School" ~ "Foster Senior High",
+    school_name == "Raisbeck Aviation High School" ~ "Raisbeck Aviation High",
+    TRUE ~ NA_character_
+  ))
+
+ggplot(data = combined, aes(x = total_leaded_flights, y = pct_above_5)) +
+  geom_jitter(size = 3, width = 2000, height = 1, aes(color = school_district)) +
+  scale_color_manual(
+    values = c(
+      "Auburn" = "#1f77b4",
+      "Bellevue" = "#ff7f0e",
+      "Enumclaw" = "#2ca02c",
+      "Federal Way" = "#d62728",
+      "Highline" = "#f781bf",
+      "Kent" = "#8c564b",
+      "Lake Washington" = "#FFF9C4",
+      "Renton" = "#7f7f7f",
+      "Seattle" = "#bcbd22",
+      "Skykomish" = "#17becf",
+      "Snoqualmie Valley" = "#4daf4a",
+      "Tukwila" = "#D8BFD8"),
+    name = "District"
+  ) +
+  geom_text_repel(
+    data = subset(combined, relevant_flights >= 10000),
+    aes(label = label_override),
+    size = 2.5,
+    color = "black",  
+    nudge_y = 5,            
+    vjust = 1,              
+    direction = "y",        
+    show.legend = FALSE, 
+    segment.color = NA
+  )+ 
+  labs(
+    title = "Lead Exposure in Schools Through Drinking Water and Air", 
+    x = "\nLead-Fueled Aircrafts Flying Over School \n(# Flights)", 
+    y = "Lead Contamination of School Drinking Water \n(% samples > 5 ppb)\n"
+  ) +
+  scale_x_continuous(labels = label_number(scale = 1e-3, suffix = "K"))+
+  theme_minimal() + 
+  theme(
+    axis.line = element_line(color = "black"),
+  ) 
+```
+
+###**Map certain selected schools in WA state and manually map relevant airports (trisha)**
+```{r}
+# Read in school point data
+school_data <- all_lead_datasets %>%
+  select(school_name, x, y)%>%
+  filter(school_name %in% c(
+    "Rainier View Elementary School",
+    "Catharine Blaine K-8 School",
+    "Maple Elementary School",
+    "Campbell Hill Elementary School",
+    "Showalter Middle School",
+    "Foster Senior High School",
+    "Raisbeck Aviation High School"
+  ))
+
+# Convert to sf object
+school_points <- st_as_sf(school_data, coords = c("Longitude", "Latitude"), crs = 4326)
+
+# Optionally, get WA outline from ESD boundaries (or use any WA polygon shapefile)
+WSD_boundaries <- read_sf("C:/Users/trish/OneDrive/Desktop/SWELL/Washington_School_District_Boundaries (1).geojson")
+wa_outline <- st_make_valid(WSD_boundaries) %>% 
+  st_union()
+
+airports <- data.frame(
+  name = c("Renton Municipal Airport", "Boeing Field"),
+  lat = c(47.48573197727368, 47.537063621341694),
+  long = c(-122.21664424732815, -122.30393060499654)
+)
+
+# Convert to sf object
+airport_sf <- st_as_sf(airports, coords = c("long", "lat"), crs = 4326)
+
+
+# Plot
+ggplot() +
+  geom_sf(data = wa_outline, fill = "white", color = "black", lwd = 0.3) +  # blank map
+  
+  geom_sf(data = school_points, color = "green", size = 2, alpha = 0.7) +
+  geom_text(data = airports, aes(x = long, y = lat, label = "✈️"), size = 6, family = "sans") +
+  theme_void() + 
+  theme(legend.position = "none")+
+  labs(title = "School Locations in Washington",
+       subtitle = "Plotted on a blank WA state map",
+       x = NULL, y = NULL)
+
+
+
+#to plot JUST king county (run above code too, just not the ggplot)
+
+
+king_wsd <- sd_map %>%
+  filter(County == "King") #or any county you want to filter out, assuming you have data for it
+
+# Fix any geometry issues and merge polygons
+king_outline <- king_wsd %>%
+  st_make_valid() %>%
+  st_union()
+
+
+# Plot
+ggplot() +
+  geom_sf(data = king_outline, fill = "white", color = "black", size = 0.4) +
+  geom_sf(data = school_points, color = "red", size = 2) +
+  geom_sf(data = airport_sf, aes(geometry = geometry), inherit.aes = FALSE) +
+  geom_text(data = airports, aes(x = long, y = lat, label = "✈️"), size = 6, family = "sans") +
+  coord_sf(crs = st_crs(king_outline)) +
+  theme_void() +
+  labs(title = "Selected Schools & Airports in King County, WA")
+
+
